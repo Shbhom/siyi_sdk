@@ -3,6 +3,13 @@
 # Virtual environment path
 VENV_PATH="$HOME/siyi_sdk/serve"
 
+# Function to control LED status
+led_control() {
+    local status=$1
+    local duration=$2
+    python3 led_control.py $status $duration &
+}
+
 # Define log function first
 log() {
   local message="$(date '+%Y-%m-%d %H:%M:%S') - $1"
@@ -40,10 +47,13 @@ log "Starting Tailscale setup script."
 # Function to check internet connectivity
 check_internet() {
   log "Checking internet connection..."
+  led_control "check" "1"
   if ping -c 3 8.8.8.8 &> /dev/null; then
     log "Internet connection available."
+    led_control "pass" "1"
   else
     log "Internet connection is not available. Exiting."
+    led_control "fail" "2"
     exit 1
   fi
 }
@@ -51,45 +61,58 @@ check_internet() {
 # Function to check if Tailscale is installed
 check_tailscale_installed() {
   log "Checking if Tailscale is installed..."
+  led_control "check" "1"
   if ! command -v tailscale &> /dev/null; then
     log "Tailscale is not installed. Installing..."
+    led_control "check" "5"  # Longer check during installation
     curl -fsSL https://tailscale.com/install.sh | sudo bash
     if [ $? -ne 0 ]; then
       log "Failed to install Tailscale. Exiting."
+      led_control "fail" "2"
       exit 1
     fi
     log "Tailscale installed successfully."
+    led_control "pass" "1"
   else
     log "Tailscale is already installed."
+    led_control "pass" "1"
   fi
 }
 
 # Function to check if Tailscale service is running
 check_tailscale_service() {
   log "Checking if Tailscale service is running..."
+  led_control "check" "1"
   if ! systemctl is-active --quiet tailscaled; then
     log "Tailscale service is not running. Starting service..."
+    led_control "check" "3"
     sudo systemctl start tailscaled
     if [ $? -ne 0 ]; then
       log "Failed to start Tailscale service. Exiting."
+      led_control "fail" "2"
       exit 1
     fi
     log "Tailscale service started successfully."
+    led_control "pass" "1"
   else
     log "Tailscale service is already running."
+    led_control "pass" "1"
   fi
 }
 
 # Function to authenticate Tailscale
 authenticate_tailscale() {
   log "Authenticating Tailscale..."
+  led_control "check" "3"
   AUTH_KEY="tskey-auth-kFpCSTWccr11CNTRL-nUiRPdPJeNTTJfnSuidFPTPm4G1HqBWN"
   sudo tailscale up --authkey "$AUTH_KEY" --advertise-tags="tag:OMC-5G"
   if [ $? -ne 0 ]; then
     log "Failed to authenticate Tailscale. Exiting."
+    led_control "fail" "2"
     exit 1
   fi
   log "Tailscale authenticated successfully with tag OMC-5G."
+  led_control "pass" "1"
 }
 
 # Function to find the VM's IP
@@ -107,6 +130,7 @@ find_vm_ip() {
 
 check_rtsp_server() {
     log "Checking RTSP server availability..."
+    led_control "check" "1"
     RTSP_URL="rtsp://192.168.144.25:8554/main.264"
     CAMERA_IP="192.168.144.25"
     
@@ -114,13 +138,15 @@ check_rtsp_server() {
     log "Pinging camera at $CAMERA_IP..."
     if ! ping -c 3 $CAMERA_IP &> /dev/null; then
         log "Camera is not responding to ping at $CAMERA_IP. Exiting."
+        led_control "fail" "2"
         exit 1
     fi
     log "Camera is responding to ping."
     
     # Wait for camera to fully initialize
     log "Waiting for camera to initialize..."
-    sleep 5
+    led_control "check" "5"
+    led_control "pass" "1"
 }
 
 # Function to check virtual environment
@@ -139,6 +165,7 @@ check_venv() {
 
 start_services() {
     log "Starting stream rebroadcaster and API server..."
+    led_control "check" "2"
     
     # Start stream.py with logging
     python3 stream.py --debug > "$STREAM_LOG_DIR/stream.log" 2>&1 &
@@ -149,40 +176,15 @@ start_services() {
     log "Starting API server with virtual environment..."
     source "$VENV_PATH/bin/activate"
     
-    # Add retry logic for API server
-    MAX_RETRIES=3
-    RETRY_COUNT=0
-    
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        PORT=5000 python3 api_server.py > "$SERVER_LOG_DIR/api_server.log" 2>&1 &
-        API_PID=$!
-        
-        # Wait for API server to start
-        sleep 5
-        
-        # Check if API is responding
-        if curl -s http://localhost:5000/docs > /dev/null; then
-            log "API server started successfully with PID: $API_PID"
-            break
-        else
-            log "API server failed to start, attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES"
-            kill $API_PID 2>/dev/null
-            ((RETRY_COUNT++))
-            sleep 2
-        fi
-    done
-    
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "Failed to start API server after $MAX_RETRIES attempts"
-        cleanup "server"
-        exit 1
-    fi
-    
+    PORT=5000 python3 api_server.py > "$SERVER_LOG_DIR/api_server.log" 2>&1 &
+    API_PID=$!
     deactivate
+    log "API server started with PID: $API_PID"
     
     # Save PIDs for cleanup
     echo $STREAM_PID > "$STREAM_LOG_DIR/stream.pid"
     echo $API_PID > "$SERVER_LOG_DIR/api_server.pid"
+    led_control "pass" "1"
 }
 
 # Function to send logs to webhook
@@ -218,6 +220,7 @@ send_logs_to_webhook() {
 
 cleanup() {
     log "Cleaning up processes..."
+    led_control "check" "1"
     local failed_service=$1
     local failed_log=""
     
@@ -235,7 +238,6 @@ cleanup() {
         log "Stopped API server process (PID: $API_PID)"
     fi
     
-    # If a service failed, show its log file path and send logs to webhook
     if [ ! -z "$failed_service" ]; then
         case "$failed_service" in
             "stream")
@@ -249,9 +251,9 @@ cleanup() {
         esac
         log "Service failed. Check logs at: $failed_log"
         log "Starter script logs available at: $STARTER_LOG_DIR"
-        
-        # Also send starter script logs
-        send_logs_to_webhook "$STARTER_LOG_DIR/starter.log" "starter"
+        led_control "fail" "2"
+    else
+        led_control "pass" "1"
     fi
 }
 
