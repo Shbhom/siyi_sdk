@@ -130,39 +130,39 @@ async def change_angle(angles: AngleRequest):
         "current_attitude": camera.getAttitude()
     }
 
-@app.post("/gimbal/pitch")
-async def adjust_pitch(adjustment: AngleAdjustment):
-    """
-    Adjust camera pitch by specified degrees
-    """
-    if not camera:
-        raise HTTPException(status_code=503, detail="Camera not initialized")
+# @app.post("/gimbal/pitch")
+# async def adjust_pitch(adjustment: AngleAdjustment):
+#     """
+#     Adjust camera pitch by specified degrees
+#     """
+#     if not camera:
+#         raise HTTPException(status_code=503, detail="Camera not initialized")
     
-    cam_angle.add_pitch(adjustment.adjustment)
-    camera.setGimbalRotation(cam_angle.yaw, cam_angle.pitch)
+#     cam_angle.add_pitch(adjustment.adjustment)
+#     camera.setGimbalRotation(cam_angle.yaw, cam_angle.pitch)
     
-    return {
-        "success": True,
-        "current_attitude": camera.getAttitude()
-    }
+#     return {
+#         "success": True,
+#         "current_attitude": camera.getAttitude()
+#     }
 
-@app.post("/gimbal/yaw")
-async def adjust_yaw(adjustment: AngleAdjustment):
-    """
-    Adjust camera yaw by specified degrees
-    """
-    if not camera:
-        raise HTTPException(status_code=503, detail="Camera not initialized")
+# @app.post("/gimbal/yaw")
+# async def adjust_yaw(adjustment: AngleAdjustment):
+#     """
+#     Adjust camera yaw by specified degrees
+#     """
+#     if not camera:
+#         raise HTTPException(status_code=503, detail="Camera not initialized")
     
-    cam_angle.add_yaw(adjustment.adjustment)
-    camera.setGimbalRotation(cam_angle.yaw, cam_angle.pitch)
+#     cam_angle.add_yaw(adjustment.adjustment)
+#     camera.setGimbalRotation(cam_angle.yaw, cam_angle.pitch)
     
-    return {
-        "success": True,
-        "current_attitude": camera.getAttitude()
-    }
+#     return {
+#         "success": True,
+#         "current_attitude": camera.getAttitude()
+#     }
 
-@app.post("/gimbal/center")
+@app.post("/center")
 async def center_gimbal():
     """
     Reset gimbal to center position (zero pitch and yaw)
