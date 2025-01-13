@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Virtual environment path
-VENV_PATH="$HOME/siyi_sdk/serve"
+VENV_PATH="$PWD/serve"
 
 # Define log function first
 log() {
@@ -14,17 +14,29 @@ if [ -z "${ERROR_WEBHOOK_URL}" ]; then
     log "WARNING: ERROR_WEBHOOK_URL not set. Error logs will not be sent to webhook."
 fi
 
+# Define base log directory first and ensure it exists
+BASE_LOG_DIR="$PWD/logs"
+if [ ! -d "$BASE_LOG_DIR" ]; then
+    mkdir -p "$BASE_LOG_DIR"
+    log "Created base log directory at: $BASE_LOG_DIR"
+fi
+
 # Get current timestamp for log directories
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-BASE_LOG_DIR="$HOME/siyi_sdk/logs"
+
+# Define and create specific log directories
 STREAM_LOG_DIR="$BASE_LOG_DIR/stream/$TIMESTAMP"
 SERVER_LOG_DIR="$BASE_LOG_DIR/server/$TIMESTAMP"
 STARTER_LOG_DIR="$BASE_LOG_DIR/starter/$TIMESTAMP"
+MAVPROXY_LOG_DIR="$BASE_LOG_DIR/mavproxy/$TIMESTAMP"
 
-# Create log directories
+# Create all required log directories
 mkdir -p "$STREAM_LOG_DIR"
 mkdir -p "$SERVER_LOG_DIR"
 mkdir -p "$STARTER_LOG_DIR"
+mkdir -p "$MAVPROXY_LOG_DIR"
+
+log "Created log directories for timestamp: $TIMESTAMP"
 
 # Set up logging for starter script
 exec 1> >(tee -a "$STARTER_LOG_DIR/starter.log")
@@ -137,6 +149,57 @@ check_venv() {
     log "Virtual environment found."
 }
 
+# Function to start MAVProxy with retries
+start_mavproxy() {
+    log "Starting MAVProxy..."
+    MAX_RETRIES=3
+    RETRY_COUNT=0
+    
+    # Configure MAVProxy command based on environment
+    #if [ "$RUNNING_ENV" = "prod" ]; then
+    #    MAVPROXY_CMD="mavproxy.py --master=/dev/ttyACM0 \
+    #        --out=127.0.0.1:14550 \
+    #        --out=127.0.0.1:14551 \
+    #        --out=127.0.0.1:14552"
+    #elif [ "$RUNNING_ENV" = "dev" ]; then
+    MAVPROXY_CMD="mavproxy.py --master=tcp:127.0.0.1:5760 \
+            --out=127.0.0.1:14550"
+    
+    #else
+    #    log "Error: RUNNING_ENV must be set to 'prod' or 'dev'"
+    #    exit 1
+    #fi
+    
+    #while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        #log "Starting MAVProxy attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES"
+        
+        # Start MAVProxy with logging
+        $MAVPROXY_CMD > "$MAVPROXY_LOG_DIR/mavproxy.log" 2>&1 &
+        MAVPROXY_PID=$!
+        echo $MAVPROXY_PID > "$MAVPROXY_LOG_DIR/mavproxy.pid"
+        
+        # Wait for MAVProxy to initialize
+        #sleep 15
+        
+        ## Check for multiple success indicators in the log
+        #if grep -q "Detected vehicle" "$MAVPROXY_LOG_DIR/mavproxy.log" && \
+        #   grep -q "online system" "$MAVPROXY_LOG_DIR/mavproxy.log" && \
+        #   grep -q "ArduCopter" "$MAVPROXY_LOG_DIR/mavproxy.log"; then
+        #    log "MAVProxy started successfully - vehicle detected and connected"
+        #    return 0
+        #else
+        #    log "MAVProxy failed to establish connection"
+        #    kill $MAVPROXY_PID 2>/dev/null
+        #    ((RETRY_COUNT++))
+        #    sleep 2
+        #fi
+    #done
+    
+    log "Failed to start MAVProxy after $MAX_RETRIES attempts"
+    cleanup "mavproxy"
+    return 1
+}
+
 start_services() {
     log "Starting stream rebroadcaster and API server..."
     
@@ -221,6 +284,20 @@ cleanup() {
     local failed_service=$1
     local failed_log=""
     
+    # Kill MAVProxy if running
+    if [ -f "$MAVPROXY_LOG_DIR/mavproxy.pid" ]; then
+        MAVPROXY_PID=$(cat "$MAVPROXY_LOG_DIR/mavproxy.pid")
+        kill $MAVPROXY_PID 2>/dev/null
+        log "Stopped MAVProxy process (PID: $MAVPROXY_PID)"
+    fi
+    
+    # Kill SITL if running in dev mode
+    if [ "$RUNNING_ENV" = "dev" ] && [ -f "$MAVPROXY_LOG_DIR/sitl.pid" ]; then
+        SITL_PID=$(cat "$MAVPROXY_LOG_DIR/sitl.pid")
+        kill $SITL_PID 2>/dev/null
+        log "Stopped SITL process (PID: $SITL_PID)"
+    fi
+    
     # Kill stream.py if running
     if [ -f "$STREAM_LOG_DIR/stream.pid" ]; then
         STREAM_PID=$(cat "$STREAM_LOG_DIR/stream.pid")
@@ -246,6 +323,10 @@ cleanup() {
                 failed_log="$SERVER_LOG_DIR/api_server.log"
                 send_logs_to_webhook "$failed_log" "server"
                 ;;
+            "mavproxy")
+                failed_log="$MAVPROXY_LOG_DIR/mavproxy.log"
+                send_logs_to_webhook "$failed_log" "mavproxy"
+                ;;
         esac
         log "Service failed. Check logs at: $failed_log"
         log "Starter script logs available at: $STARTER_LOG_DIR"
@@ -263,38 +344,50 @@ log "Executing setup steps..."
 
 check_internet
 check_venv
-check_tailscale_installed
-check_tailscale_service
+#check_tailscale_installed
+#check_tailscale_service
 # Try to find VM first, authenticate only if needed
-if ! find_vm_ip; then
-  log "Authenticating Tailscale as VM was not found..."
-  authenticate_tailscale
-  # Try finding VM again after authentication
-  if ! find_vm_ip; then
-    log "Still cannot find VM after authentication. Exiting."
-    exit 1
-  fi
-fi
-check_rtsp_server
-start_services
+#if ! find_vm_ip; then
+#  log "Authenticating Tailscale as VM was not found..."
+#  authenticate_tailscale
+#  # Try finding VM again after authentication
+#  if ! find_vm_ip; then
+#    log "Still cannot find VM after authentication. Exiting."
+#    exit 1
+#  fi
+#fi
+#check_rtsp_server
 
-log "All services started. Logs are available in:"
-log "Starter logs: $STARTER_LOG_DIR"
-log "Stream logs: $STREAM_LOG_DIR"
-log "Server logs: $SERVER_LOG_DIR"
-log "API Documentation: http://localhost:5000/docs"
+# Start MAVProxy
+if ! start_mavproxy; then
+    log "Failed to start MAVProxy. Exiting."
+    exit 1
+fi
+
+#start_services
+
+#log "All services started. Logs are available in:"
+#log "Starter logs: $STARTER_LOG_DIR"
+#log "Stream logs: $STREAM_LOG_DIR"
+#log "Server logs: $SERVER_LOG_DIR"
+#log "API Documentation: http://localhost:5000/docs"
 
 # Keep the script running and monitor child processes
-while true; do
-    if ! kill -0 $STREAM_PID 2>/dev/null; then
-        log "Stream process died unexpectedly!"
-        cleanup "stream"
-        exit 1
-    fi
-    if ! kill -0 $API_PID 2>/dev/null; then
-        log "API server died unexpectedly!"
-        cleanup "server"
-        exit 1
-    fi
-    sleep 5
-done
+#while true; do
+#    if ! kill -0 $STREAM_PID 2>/dev/null; then
+#        log "Stream process died unexpectedly!"
+#        cleanup "stream"
+#        exit 1
+#    fi
+#    if ! kill -0 $API_PID 2>/dev/null; then
+#        log "API server died unexpectedly!"
+#        cleanup "server"
+#        exit 1
+#    fi
+#    if ! kill -0 $MAVPROXY_PID 2>/dev/null; then
+#        log "MAVProxy died unexpectedly!"
+#        cleanup "mavproxy"
+#        exit 1
+#    fi
+#    sleep 5
+#done
